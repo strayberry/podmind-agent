@@ -1,0 +1,61 @@
+[project]
+name = "podmind"
+version = "0.1.0"
+description = "Download, transcribe, and summarize Xiaoyuzhou FM podcasts"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.32",
+    "tqdm>=4.67",
+    "qwen-asr>=0.0.6",
+    "openai>=1.0",
+    "python-dotenv>=1.0",
+    "torch>=2.0",
+    "mlx-whisper>=0.4",
+]
+
+[project.scripts]
+podmind = "podmind.main:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+podmind = ["prompts/*.txt"]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.12",
+    "mypy>=1.0",
+    "pytest>=8.0",
+    "pytest-mock>=3.0",
+]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_transcriber.py" = ["SIM117"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["requests", "tqdm", "qwen_asr.*", "mlx_whisper"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
