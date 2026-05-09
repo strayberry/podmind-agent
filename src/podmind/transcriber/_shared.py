@@ -5,13 +5,12 @@ Separated to avoid circular imports between __init__.py and backends/.
 
 import hashlib
 import json
-import os
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..config import TRANSCRIPTS_DIR, PodmindError, ensure_dirs, validate_episode_id
+from ..config import TRANSCRIPTS_DIR, PodmindError, validate_episode_id
+from ..io_utils import atomic_write as _atomic_write  # noqa: F401 — re-exported
 
 # ------------------------------------------------------------------
 
@@ -62,21 +61,6 @@ def _get_duration(audio_path: str) -> float:
     return float(info["format"]["duration"])
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    """Write content atomically via a temp file + rename."""
-    ensure_dirs()
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".tmp.")
-    try:
-        try:
-            os.write(fd, content.encode("utf-8"))
-        finally:
-            os.close(fd)
-        Path(tmp).replace(path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-
-
 # ------------------------------------------------------------------
 # Dataclasses
 # ------------------------------------------------------------------
@@ -84,16 +68,19 @@ def _atomic_write(path: Path, content: str) -> None:
 
 @dataclass
 class TranscribeProfile:
-    """Timing profile for a transcription run."""
+    """Timing profile for a transcription run.
+
+    *settings* carries backend-agnostic configuration (chunk_seconds,
+    batch_size, dtype, model, etc.).  *stages* carries per-stage wall-clock
+    times (ffprobe, ffmpeg_split, etc.) — any backend can add its own keys.
+    """
 
     model_load_seconds: float = 0.0
-    ffprobe_seconds: float = 0.0
-    ffmpeg_split_seconds: float = 0.0
-    chunk_seconds_used: int = 600
-    batch_size_used: int = 1
+    total_audio_duration: float = 0.0
     chunk_count: int = 0
     chunk_transcribe_seconds: list[float] = field(default_factory=list)
-    total_audio_duration: float = 0.0
+    settings: dict[str, object] = field(default_factory=dict)
+    stages: dict[str, float] = field(default_factory=dict)
 
     @property
     def total_transcribe_seconds(self) -> float:
@@ -107,19 +94,29 @@ class TranscribeProfile:
         return self.total_transcribe_seconds / self.total_audio_duration
 
     def format(self) -> str:
-        lines = [
-            "--- Transcription Profile ---",
-            f"  Model load:     {self.model_load_seconds:.1f}s",
-            f"  ffprobe:        {self.ffprobe_seconds:.1f}s",
-            f"  ffmpeg split:   {self.ffmpeg_split_seconds:.1f}s",
-            f"  Chunk settings: {self.chunk_seconds_used}s x {self.chunk_count}"
-            f" (batch={self.batch_size_used})",
+        lines = ["--- Transcription Profile ---"]
+        if self.model_load_seconds:
+            lines.append(f"  Model load:     {self.model_load_seconds:.1f}s")
+        for name, secs in self.stages.items():
+            lines.append(f"  {name + ':':<15} {secs:.1f}s")
+        if self.settings:
+            parts = [f"{k}={v}" for k, v in self.settings.items()]
+            lines.append(f"  Settings:       {', '.join(parts)}")
+        if self.chunk_count:
+            lines.append(f"  Chunks:         {self.chunk_count}")
+        lines += [
             f"  Total transcribe: {self.total_transcribe_seconds:.1f}s",
-            f"  Audio duration: {self.total_audio_duration:.0f}s",
-            f"  RTF:            {self.rtf:.3f}",
+            f"  Audio duration:   {self.total_audio_duration:.0f}s",
+            f"  RTF:              {self.rtf:.3f}",
         ]
-        for i, t in enumerate(self.chunk_transcribe_seconds):
-            lines.append(f"    Chunk {i + 1}/{self.chunk_count}: {t:.1f}s")
+        if self.chunk_transcribe_seconds:
+            chunks = self.chunk_transcribe_seconds
+            lines.append(
+                f"  Batch times:   min={min(chunks):.1f}s  max={max(chunks):.1f}s  "
+                f"avg={sum(chunks) / len(chunks):.1f}s"
+            )
+            for i, t in enumerate(chunks):
+                lines.append(f"    Batch {i + 1}/{len(chunks)}: {t:.1f}s")
         return "\n".join(lines)
 
 
@@ -134,3 +131,4 @@ class TranscriptResult:
     language: str | None = None
     audio_duration: float = 0.0
     profile: TranscribeProfile | None = None
+    from_cache: bool = False

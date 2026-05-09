@@ -1,25 +1,21 @@
 """Qwen3-ASR backend via qwen-asr + torch MPS."""
 
-import json
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-from ...config import ASR_DEVICE, ASR_MODEL_ID, PodmindError
+from ...config import ASR_DEVICE, PodmindError
 from .._shared import (
     TranscribeProfile,
     TranscriptResult,
-    _file_sha256,
     _get_duration,
-    _transcript_meta_path,
-    transcript_path,
 )
 from .base import ASRBackend
 
 
-def _split_audio(audio_path: str, tmp_dir: str, chunk_seconds: int = 600) -> list[Path]:
+def _split_audio(audio_path: str, tmp_dir: str, chunk_seconds: int = 30) -> list[Path]:
     """Split audio into chunk_seconds segments, return list of WAV paths."""
     pattern = Path(tmp_dir) / "chunk_%03d.wav"
     try:
@@ -38,6 +34,16 @@ def _split_audio(audio_path: str, tmp_dir: str, chunk_seconds: int = 600) -> lis
     return sorted(Path(tmp_dir).glob("chunk_*.wav"))
 
 
+def _default_max_new_tokens(chunk_seconds: int) -> int:
+    if chunk_seconds <= 60:
+        return 512
+    if chunk_seconds <= 120:
+        return 1024
+    if chunk_seconds <= 300:
+        return 2048
+    return 3072
+
+
 class QwenBackend(ASRBackend):
     """Qwen3-ASR backend via qwen-asr + torch MPS."""
 
@@ -46,8 +52,10 @@ class QwenBackend(ASRBackend):
     def __init__(self) -> None:
         self._model: Any = None
         self._model_id: str = ""
-        self._chunk_seconds: int = 600
+        self._chunk_seconds: int = 30
         self._batch_size: int = 1
+        self._max_new_tokens: int = 0
+        self._dtype: str = "float16"
 
     # ------------------------------------------------------------------
     # ASRBackend interface
@@ -55,8 +63,11 @@ class QwenBackend(ASRBackend):
 
     def load_model(self, model_id: str, **kwargs: object) -> None:
         self._model_id = model_id
-        self._chunk_seconds = int(kwargs.get("chunk_seconds", 600))  # type: ignore[call-overload]
+        self._chunk_seconds = int(kwargs.get("chunk_seconds", 30))  # type: ignore[call-overload]
         self._batch_size = int(kwargs.get("batch_size", 1))  # type: ignore[call-overload]
+        self._max_new_tokens = int(kwargs.get("max_new_tokens", 0) or 0)  # type: ignore[call-overload]
+        raw_dtype = kwargs.get("dtype", "float16")
+        self._dtype = str(raw_dtype) if raw_dtype else "float16"
 
         if ASR_DEVICE != "mps":
             raise PodmindError(
@@ -83,13 +94,16 @@ class QwenBackend(ASRBackend):
                 f"Original error: {e}"
             ) from e
 
-        print(f"Loading Qwen3-ASR model (device={ASR_DEVICE})...")
+        dt = getattr(torch, self._dtype, torch.bfloat16)
+        tokens = self._max_new_tokens or _default_max_new_tokens(self._chunk_seconds)
+        print(f"Loading Qwen3-ASR model (device={ASR_DEVICE}, dtype={self._dtype}, "
+              f"max_new_tokens={tokens})...")
         t0 = time.perf_counter()
         self._model = Qwen3ASRModel.from_pretrained(
             self._model_id,
-            dtype=torch.bfloat16,
+            dtype=dt,
             device_map={"": ASR_DEVICE},
-            max_new_tokens=4096,
+            max_new_tokens=tokens,
             max_inference_batch_size=self._batch_size,
         )
         self._load_seconds = time.perf_counter() - t0
@@ -109,17 +123,23 @@ class QwenBackend(ASRBackend):
         """Run Qwen3-ASR inference. No caching, no file I/O."""
         chunk_seconds = int(kwargs.get("chunk_seconds", self._chunk_seconds))  # type: ignore[call-overload]
         batch_size = int(kwargs.get("batch_size", self._batch_size))  # type: ignore[call-overload]
+        max_new_tokens = int(kwargs.get("max_new_tokens", 0) or 0)  # type: ignore[call-overload]
+        tokens_limit = max_new_tokens or _default_max_new_tokens(chunk_seconds)
 
         prof = TranscribeProfile(
-            chunk_seconds_used=chunk_seconds,
-            batch_size_used=batch_size,
+            settings={
+                "chunk_seconds": chunk_seconds,
+                "batch_size": batch_size,
+                "max_new_tokens": tokens_limit,
+                "dtype": self._dtype,
+            },
         ) if profile else None
 
         # Duration via ffprobe
         t0 = time.perf_counter()
         duration = _get_duration(audio_path)
         if prof:
-            prof.ffprobe_seconds = time.perf_counter() - t0
+            prof.stages["ffprobe"] = time.perf_counter() - t0
             prof.total_audio_duration = duration
         print(f"Audio duration: {duration:.0f}s ({duration / 60:.1f} min)")
 
@@ -128,7 +148,7 @@ class QwenBackend(ASRBackend):
             t0 = time.perf_counter()
             chunks = _split_audio(audio_path, tmp_dir, chunk_seconds)
             if prof:
-                prof.ffmpeg_split_seconds = time.perf_counter() - t0
+                prof.stages["ffmpeg_split"] = time.perf_counter() - t0
                 prof.chunk_count = len(chunks)
             print(f"Split into {len(chunks)} chunks ({chunk_seconds}s each)")
 
@@ -147,11 +167,18 @@ class QwenBackend(ASRBackend):
                 elapsed = time.perf_counter() - t0
 
                 if prof:
-                    per_chunk = elapsed / len(batch)
-                    prof.chunk_transcribe_seconds.extend([per_chunk] * len(batch))
+                    prof.chunk_transcribe_seconds.append(elapsed)
 
                 for r in results:
                     full_text += r.text + "\n"
+                    # Truncation detection: warn if output char count
+                    # approaches max_new_tokens (rough proxy for token count).
+                    if len(r.text) > tokens_limit * 0.8:
+                        print(
+                            f"WARNING: output ({len(r.text)} chars) may be truncated "
+                            f"(max_new_tokens={tokens_limit}). "
+                            f"Consider increasing --qwen-max-new-tokens."
+                        )
 
         full_text = full_text.strip()
 
@@ -170,69 +197,9 @@ class QwenBackend(ASRBackend):
 
     @staticmethod
     def normalize_language(lang: str | None) -> str | None:
-        """Qwen accepts full language names (e.g. 'Chinese') — pass through."""
-        return lang
-
-
-# ------------------------------------------------------------------
-# Qwen-specific cache helpers (re-exported for backward compatibility).
-# New code should use the public _check_transcript_cache / _build_meta
-# in the transcriber package instead.
-# ------------------------------------------------------------------
-
-
-def _check_qwen_cache(
-    episode_id: str,
-    audio_path: str,
-    language: str | None = None,
-    force: bool = False,
-    chunk_seconds: int = 600,
-    batch_size: int = 1,
-) -> str | None:
-    if force:
-        return None
-
-    out_path = transcript_path(episode_id, backend="qwen")
-    if not (out_path.exists() and out_path.stat().st_size > 0):
-        return None
-
-    meta_path = _transcript_meta_path(episode_id, backend="qwen")
-    current_meta = {
-        "audio_sha256": _file_sha256(audio_path),
-        "language": language,
-        "asr_model": ASR_MODEL_ID,
-        "chunk_seconds": chunk_seconds,
-        "batch_size": batch_size,
-    }
-
-    if meta_path.exists():
-        try:
-            saved = json.loads(meta_path.read_text(encoding="utf-8"))
-            if saved == current_meta:
-                print(f"Transcript already exists: {out_path}")
-                return out_path.read_text(encoding="utf-8")
-        except (json.JSONDecodeError, KeyError):
+        """Map ISO codes to full names for Qwen (e.g. 'zh' → 'Chinese')."""
+        if lang is None:
             return None
-    else:
-        print(
-            f"Transcript already exists: {out_path} "
-            "(no meta; re-run with --force to refresh)"
-        )
-        return out_path.read_text(encoding="utf-8")
-
-    return None
-
-
-def _build_qwen_meta(
-    audio_path: str,
-    language: str | None,
-    chunk_seconds: int,
-    batch_size: int,
-) -> dict:
-    return {
-        "audio_sha256": _file_sha256(audio_path),
-        "language": language,
-        "asr_model": ASR_MODEL_ID,
-        "chunk_seconds": chunk_seconds,
-        "batch_size": batch_size,
-    }
+        from ...config import get_language_full
+        mapped = get_language_full(lang)
+        return mapped if mapped is not None else lang

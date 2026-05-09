@@ -22,12 +22,9 @@ from .scraper import fetch_episode, load_episode_info
 from .summarizer import summarize, summary_path
 from .transcriber import (
     _DEFAULT_MODELS,
+    ASRSession,
     TranscribeProfile,
-    _check_transcript_cache,
-    _get_backend_class,
     _get_duration,
-    _instantiate_backend,
-    _write_transcript_cache,
     transcribe,
     transcript_path,
 )
@@ -50,18 +47,19 @@ def positive_int(value: str) -> int:
     return ival
 
 
+def _batch_size_int(value: str) -> int:
+    ival = int(value)
+    if ival < 1 or ival > 8:
+        raise argparse.ArgumentTypeError(
+            f"batch-size must be between 1 and 8, got {ival}"
+        )
+    return ival
 
-def cmd_full(args: argparse.Namespace) -> None:
-    """Run the full pipeline: fetch → download → transcribe → summarize."""
-    # Backend-aware preflight
-    issues = []
-    if not _check_binary("ffprobe"):
-        issues.append("ffprobe not found — required for audio duration detection")
-    if not DEEPSEEK_API_KEY:
-        issues.append("DEEPSEEK_API_KEY not set — summarization will fail")
-    if args.asr_backend == "qwen":
-        if not _check_binary("ffmpeg"):
-            issues.append("ffmpeg not found — required for audio splitting")
+
+def _check_backend_issues(backend: str) -> list[str]:
+    """Return backend-specific preflight issues (no ffmpeg/ffprobe)."""
+    issues: list[str] = []
+    if backend == "qwen":
         if ASR_DEVICE != "mps":
             issues.append(
                 f"Unsupported ASR_DEVICE={ASR_DEVICE!r}. "
@@ -73,11 +71,62 @@ def cmd_full(args: argparse.Namespace) -> None:
                 issues.append("MPS is required — Qwen backend only runs on Apple Silicon")
         except ImportError:
             issues.append("torch not installed — Qwen backend unavailable")
+    elif backend == "mlx-whisper":
+        from importlib.util import find_spec
+        if find_spec("mlx_whisper") is None:
+            issues.append("mlx-whisper not installed")
+    return issues
+
+
+def _collect_preflight_issues(backend: str, *, need_summary: bool = False) -> list[str]:
+    """System-level preflight only — no backend model checks.
+
+    Backend model dependencies (torch, MPS, mlx-whisper) are checked lazily
+    on cache miss by _instantiate_backend().  This keeps cache-hit paths fast
+    and side-effect-free.
+    """
+    issues: list[str] = []
+    if not _check_binary("ffprobe"):
+        issues.append("ffprobe not found — required for audio duration detection")
+    if need_summary and not DEEPSEEK_API_KEY:
+        issues.append("DEEPSEEK_API_KEY not set — summarization will fail")
+    if backend == "qwen" and not _check_binary("ffmpeg"):
+        issues.append("ffmpeg not found — required for audio splitting")
+    return issues
+
+
+def _exit_on_preflight_issues(issues: list[str]) -> None:
     if issues:
         for i in issues:
-            print(f"WARNING: {i}")
+            print(f"ERROR: {i}", file=sys.stderr)
         sys.exit("Preflight failed. Fix the issues above and retry.")
 
+
+def _add_asr_args(parser: argparse.ArgumentParser, *, qwen: bool = True) -> None:
+    """Add --asr-backend and --asr-model to a subparser."""
+    parser.add_argument("--asr-backend", choices=["qwen", "mlx-whisper"], default="mlx-whisper",
+                        help="ASR backend (default: mlx-whisper)")
+    parser.add_argument("--asr-model", default=None,
+                        help="ASR model ID (default: per-backend default)")
+    if qwen:
+        _add_qwen_args(parser)
+
+
+def _add_qwen_args(parser: argparse.ArgumentParser) -> None:
+    """Add Qwen-specific CLI flags to a subparser."""
+    parser.add_argument("--chunk-seconds", type=positive_int, default=30,
+                        help="Seconds per audio chunk (30-1800, default 30)")
+    parser.add_argument("--batch-size", type=_batch_size_int, default=1,
+                        help="Batch size for transcribing chunks (1-8, default 1)")
+    parser.add_argument("--qwen-max-new-tokens", type=int, default=0,
+                        help="Max tokens for Qwen generation (0=auto-scale)")
+    parser.add_argument("--qwen-dtype", choices=["bfloat16", "float16"], default="float16",
+                        help="Torch dtype for Qwen backend (default: float16)")
+
+
+
+def cmd_full(args: argparse.Namespace) -> None:
+    """Run the full pipeline: fetch → download → transcribe → summarize."""
     print(f"=== Fetching episode: {args.url} ===")
     info = fetch_episode(args.url)
     print(f"  Title:    {info.title}")
@@ -99,6 +148,8 @@ def cmd_full(args: argparse.Namespace) -> None:
         profile=args.profile,
         backend=args.asr_backend,
         backend_model=args.asr_model,
+        max_new_tokens=getattr(args, "qwen_max_new_tokens", 0),
+        dtype=getattr(args, "qwen_dtype", ""),
     )
 
     print("\n=== Summarizing ===")
@@ -132,24 +183,6 @@ def cmd_transcribe(args: argparse.Namespace) -> None:
     eid = validate_episode_id(args.episode_id)
     ap = audio_path(eid)
 
-    # Preflight: backend-aware
-    issues = []
-    if not _check_binary("ffprobe"):
-        issues.append("ffprobe not found — required for audio duration detection")
-    if args.asr_backend == "qwen":
-        if not _check_binary("ffmpeg"):
-            issues.append("ffmpeg not found — required for audio splitting")
-        try:
-            import torch
-            if not torch.backends.mps.is_available():
-                issues.append("MPS is required — Qwen backend only runs on Apple Silicon")
-        except ImportError:
-            issues.append("torch not installed — Qwen backend unavailable")
-    if issues:
-        for i in issues:
-            print(f"ERROR: {i}")
-        sys.exit("Preflight failed. Fix the issues above and retry.")
-
     if not ap.exists():
         sys.exit(f"Audio not found: {ap}\nRun 'podmind fetch' first.")
     text = transcribe(
@@ -162,6 +195,8 @@ def cmd_transcribe(args: argparse.Namespace) -> None:
         profile=args.profile,
         backend=args.asr_backend,
         backend_model=args.asr_model,
+        max_new_tokens=getattr(args, "qwen_max_new_tokens", 0),
+        dtype=getattr(args, "qwen_dtype", ""),
     )
     if not args.quiet:
         print(text)
@@ -195,32 +230,7 @@ def cmd_summarize(args: argparse.Namespace) -> None:
 def cmd_batch_transcribe(args: argparse.Namespace) -> None:
     """Transcribe multiple episodes with a single model load."""
     backend_name: str = args.asr_backend
-    backend_cls = _get_backend_class(backend_name)
-    backend_lang = backend_cls.normalize_language(args.language)
     model_id: str = args.asr_model or _DEFAULT_MODELS[backend_name]
-
-    # Preflight: check binaries (needed only for qwen backend)
-    issues = []
-    if not _check_binary("ffprobe"):
-        issues.append("ffprobe not found — required for audio duration detection")
-    if backend_name == "qwen":
-        if not _check_binary("ffmpeg"):
-            issues.append("ffmpeg not found — required for audio splitting")
-        if ASR_DEVICE != "mps":
-            issues.append(
-                f"Unsupported ASR_DEVICE={ASR_DEVICE!r}. "
-                "Qwen backend only supports Apple Silicon (MPS)."
-            )
-        try:
-            import torch
-            if not torch.backends.mps.is_available():
-                issues.append("MPS is required — Qwen backend only runs on Apple Silicon")
-        except ImportError:
-            issues.append("torch not installed — Qwen backend unavailable")
-    if issues:
-        for issue in issues:
-            print(f"ERROR: {issue}")
-        sys.exit("Preflight failed. Fix the issues above and retry.")
 
     # Validate IDs and check audio
     episode_ids: list[str] = []
@@ -238,66 +248,30 @@ def cmd_batch_transcribe(args: argparse.Namespace) -> None:
     if not episode_ids:
         sys.exit("No episodes to process.")
 
-    # Build backend-specific extra meta
-    extra_meta: dict | None = (
-        {"chunk_seconds": args.chunk_seconds, "batch_size": args.batch_size}
-        if backend_name == "qwen" else None
+    # Create session (no model load yet — lazy)
+    session = ASRSession(
+        backend_name, model_id, args.language,
+        chunk_seconds=args.chunk_seconds,
+        batch_size=args.batch_size,
+        max_new_tokens=getattr(args, "qwen_max_new_tokens", 0),
+        dtype=getattr(args, "qwen_dtype", ""),
     )
 
-    # Pre-filter: use public cache checker (no model loaded yet)
-    needs_transcribe: list[str] = []
-    cache_hits = 0
-    for eid in episode_ids:
-        cached = _check_transcript_cache(
-            eid,
-            str(audio_path(eid)),
-            backend=backend_name,
-            backend_model=model_id,
-            language=backend_lang,
-            force=args.force,
-            extra_meta=extra_meta,
-        )
-        if cached is not None:
-            cache_hits += 1
-            if not args.quiet:
-                print(f"\n=== {eid} (cached) ===\n{cached}")
-        else:
-            needs_transcribe.append(eid)
-
-    if cache_hits:
-        print(f"Cache hits: {cache_hits}/{len(episode_ids)}")
-    if not needs_transcribe:
-        print("All episodes already transcribed.")
-        return
-
-    # Load model once for remaining episodes
-    t_start = time.perf_counter()
-    be = _instantiate_backend(
-        backend_name, model_id,
-        args.chunk_seconds, args.batch_size,
-    )
-    model_load_time = time.perf_counter() - t_start
-
-    # Process each remaining episode
+    # Process each episode
     profiles: list[tuple[str, TranscribeProfile]] = []
     failed: list[str] = []
+    cache_hits = 0
 
-    for eid in needs_transcribe:
+    for eid in episode_ids:
         print(f"\n=== Transcribing {eid} ===")
         try:
-            result = be.transcribe_raw(
-                str(audio_path(eid)),
-                language=backend_lang,
-                profile=args.profile,
-                chunk_seconds=args.chunk_seconds,
-                batch_size=args.batch_size,
+            result = session.transcribe_episode(
+                eid, str(audio_path(eid)),
+                force=args.force, profile=args.profile,
             )
-            # Write cache via public layer
-            _write_transcript_cache(
-                eid, result, str(audio_path(eid)), backend_lang, extra_meta,
-            )
-            if result.profile:
-                result.profile.model_load_seconds = model_load_time
+            if result.from_cache:
+                cache_hits += 1
+            elif result.profile:
                 profiles.append((eid, result.profile))
             if not args.quiet:
                 print(result.text)
@@ -306,7 +280,7 @@ def cmd_batch_transcribe(args: argparse.Namespace) -> None:
             failed.append(eid)
 
     # Summary
-    succeeded = len(needs_transcribe) - len(failed)
+    succeeded = len(episode_ids) - len(failed)
     total = len(episode_ids)
     print(f"\n=== Batch complete: {succeeded}/{total} succeeded "
           f"({cache_hits} from cache) ===")
@@ -318,7 +292,6 @@ def cmd_batch_transcribe(args: argparse.Namespace) -> None:
         total_audio = sum(p.total_audio_duration for _, p in profiles)
         print("\n--- Aggregate Profile ---")
         print(f"  Episodes:          {len(profiles)}")
-        print(f"  Model load:        {model_load_time:.1f}s (once)")
         print(f"  Total transcribe:  {total_transcribe:.1f}s")
         print(f"  Total audio:       {total_audio:.0f}s")
         if total_audio > 0:
@@ -334,16 +307,14 @@ def cmd_batch_transcribe(args: argparse.Namespace) -> None:
 
 def cmd_bench(args: argparse.Namespace) -> None:
     """Benchmark ASR backends on a short clip from an episode."""
-    # Preflight checks
-    issues = []
-    if not _check_binary("ffmpeg"):
-        issues.append("ffmpeg not found — required for audio clipping")
+    issues: list[str] = []
     if not _check_binary("ffprobe"):
         issues.append("ffprobe not found — required for audio duration detection")
-    if issues:
-        for i in issues:
-            print(f"ERROR: {i}")
-        sys.exit("Preflight failed.")
+    if not _check_binary("ffmpeg"):
+        issues.append("ffmpeg not found — required for clip extraction")
+    for b in args.backends:
+        issues.extend(_check_backend_issues(b))
+    _exit_on_preflight_issues(issues)
 
     eid = validate_episode_id(args.episode_id)
     ap = audio_path(eid)
@@ -374,20 +345,15 @@ def cmd_bench(args: argparse.Namespace) -> None:
         print(f"--- {backend_name} ---")
         t0 = time.perf_counter()
         try:
-            backend_cls = _get_backend_class(backend_name)
-            lang = backend_cls.normalize_language(args.language)
             model_id = _DEFAULT_MODELS[backend_name]
-            be = _instantiate_backend(
-                backend_name, model_id,
-                args.chunk_seconds, args.batch_size,
-            )
-            result = be.transcribe_raw(
-                str(clip_path),
-                language=lang,
-                profile=args.profile,
+            session = ASRSession(
+                backend_name, model_id, args.language,
                 chunk_seconds=args.chunk_seconds,
                 batch_size=args.batch_size,
+                max_new_tokens=getattr(args, "qwen_max_new_tokens", 0),
+                dtype=getattr(args, "qwen_dtype", ""),
             )
+            result = session.transcribe_raw(str(clip_path), profile=args.profile)
             text = result.text
         except Exception as exc:
             print(f"ERROR: {backend_name} failed: {exc}")
@@ -413,6 +379,9 @@ def cmd_bench(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # Prevent output buffering when stdout is redirected to a pipe or file.
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+
     parser = argparse.ArgumentParser(
         description="PodMind — download, transcribe, and summarize Xiaoyuzhou FM podcasts"
     )
@@ -427,16 +396,9 @@ def main() -> None:
                         help="ASR language (zh, en, ja, ko, yue, or full name like Chinese)")
     p_full.add_argument("--model", default="deepseek-v4-pro", help="LLM model for summarization")
     p_full.add_argument("--force", action="store_true", help="Skip cache")
-    p_full.add_argument("--chunk-seconds", type=positive_int, default=600,
-                        help="Seconds per audio chunk (30-1800, default 600)")
-    p_full.add_argument("--batch-size", type=int, default=1, choices=[1, 2, 4],
-                        help="Batch size for transcribing chunks (default 1)")
+    _add_asr_args(p_full)
     p_full.add_argument("--profile", action="store_true",
                         help="Print timing profile after transcription")
-    p_full.add_argument("--asr-backend", choices=["qwen", "mlx-whisper"], default="mlx-whisper",
-                        help="ASR backend (default: mlx-whisper)")
-    p_full.add_argument("--asr-model", default=None,
-                        help="ASR model ID (default: per-backend default)")
     p_full.set_defaults(func=cmd_full)
 
     # podmind fetch
@@ -452,16 +414,9 @@ def main() -> None:
                         help="ASR language (zh, en, ja, ko, yue, or full name like Chinese)")
     p_trans.add_argument("--force", action="store_true", help="Re-transcribe even if cached")
     p_trans.add_argument("--quiet", action="store_true", help="Suppress transcript output")
-    p_trans.add_argument("--chunk-seconds", type=positive_int, default=600,
-                         help="Seconds per audio chunk (30-1800, default 600)")
-    p_trans.add_argument("--batch-size", type=int, default=1, choices=[1, 2, 4],
-                         help="Batch size for transcribing chunks (default 1)")
+    _add_asr_args(p_trans)
     p_trans.add_argument("--profile", action="store_true",
                          help="Print timing profile after transcription")
-    p_trans.add_argument("--asr-backend", choices=["qwen", "mlx-whisper"], default="mlx-whisper",
-                         help="ASR backend (default: mlx-whisper)")
-    p_trans.add_argument("--asr-model", default=None,
-                         help="ASR model ID (default: per-backend default)")
     p_trans.set_defaults(func=cmd_transcribe)
 
     # podmind summarize
@@ -480,20 +435,13 @@ def main() -> None:
     p_batch.add_argument("episode_ids", nargs="+", help="Episode IDs to transcribe")
     p_batch.add_argument("--language", type=validate_language, default=None,
                         help="ASR language (zh, en, ja, ko, yue, or full name like Chinese)")
-    p_batch.add_argument("--chunk-seconds", type=positive_int, default=600,
-                         help="Seconds per audio chunk (30-1800, default 600)")
-    p_batch.add_argument("--batch-size", type=int, default=1, choices=[1, 2, 4],
-                         help="Batch size (default 1)")
+    _add_asr_args(p_batch)
     p_batch.add_argument("--profile", action="store_true",
                          help="Print timing profile")
     p_batch.add_argument("--force", action="store_true",
                          help="Re-transcribe even if cached")
     p_batch.add_argument("--quiet", action="store_true",
                          help="Suppress transcript output")
-    p_batch.add_argument("--asr-backend", choices=["qwen", "mlx-whisper"], default="mlx-whisper",
-                         help="ASR backend (default: mlx-whisper)")
-    p_batch.add_argument("--asr-model", default=None,
-                         help="ASR model ID (default: per-backend default)")
     p_batch.set_defaults(func=cmd_batch_transcribe)
 
     # podmind doctor
@@ -512,10 +460,7 @@ def main() -> None:
     p_bench.add_argument("--backends", nargs="+", default=["qwen", "mlx-whisper"],
                          choices=["qwen", "mlx-whisper"],
                          help="Backends to compare (default: qwen mlx-whisper)")
-    p_bench.add_argument("--chunk-seconds", type=positive_int, default=600,
-                         help="Chunk seconds for qwen backend")
-    p_bench.add_argument("--batch-size", type=int, default=1, choices=[1, 2, 4],
-                         help="Batch size for qwen backend")
+    _add_qwen_args(p_bench)
     p_bench.add_argument("--profile", action="store_true",
                          help="Print timing profile per backend")
     p_bench.add_argument("--force", action="store_true",
@@ -543,57 +488,66 @@ def main() -> None:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     """Run preflight checks and report status."""
+    from contextlib import suppress
+
     print(f"PodMind preflight checks (backend: {args.asr_backend})\n")
     all_ok = True
     backend = args.asr_backend
 
-    required: list[tuple[str, bool]] = [
+    # --- ASR required ---
+    asr_required: list[tuple[str, bool]] = [
         ("ffprobe", _check_binary("ffprobe")),
-        ("DEEPSEEK_API_KEY", bool(DEEPSEEK_API_KEY)),
     ]
-    optional: list[tuple[str, bool]] = [
-        ("ffmpeg", _check_binary("ffmpeg")),
-    ]
-    info: list[tuple[str, str]] = []
-
     if backend == "qwen":
-        required.append(("ffmpeg", _check_binary("ffmpeg")))
-        optional.remove(("ffmpeg", _check_binary("ffmpeg")))
-        required.append(("ASR_DEVICE (must be mps)", ASR_DEVICE == "mps"))
+        asr_required.append(("ffmpeg", _check_binary("ffmpeg")))
+        asr_required.append(("ASR_DEVICE (must be mps)", ASR_DEVICE == "mps"))
         try:
             import torch
             device_ok = torch.backends.mps.is_available()
-            required.append(("torch", True))
-            required.append(("torch device (mps)", device_ok))
-            info.append(("PyTorch version", str(torch.__version__)))
+            asr_required.append(("torch", True))
+            asr_required.append(("torch device (mps)", device_ok))
         except ImportError:
-            required.append(("torch", False))
+            asr_required.append(("torch", False))
     else:
-        try:
-            import mlx_whisper
-            required.append(("mlx-whisper", True))
-            info.append(("mlx-whisper version", mlx_whisper.__version__))
-        except ImportError:
-            required.append(("mlx-whisper", False))
+        from importlib.metadata import version
+        from importlib.util import find_spec
+        if find_spec("mlx_whisper") is not None:
+            asr_required.append(("mlx-whisper", True))
+        else:
+            asr_required.append(("mlx-whisper", False))
 
-    print("  Required:")
-    for name, ok in required:
+    print("  ASR required:")
+    for name, ok in asr_required:
         status = "OK" if ok else "MISSING"
         print(f"    [{status:7s}] {name}")
         if not ok:
             all_ok = False
 
+    # --- Summary (only needed for podmind full / summarize) ---
+    print()
+    print("  Summary:")
+    summary_ok = bool(DEEPSEEK_API_KEY)
+    print(f"    [{'OK' if summary_ok else 'not set'}] DEEPSEEK_API_KEY")
+
+    # --- Optional ---
     print()
     print("  Optional:")
-    for name, ok in optional:
-        status = "OK" if ok else "not found"
-        tag = "OK " if ok else "   "
-        print(f"    [{tag}    ] {name} (for bench/advanced use)")
+    ffmpeg_ok = _check_binary("ffmpeg")
+    print(f"    [{'OK ' if ffmpeg_ok else '   '}    ] ffmpeg (clip extraction / bench)")
 
+    # --- Info ---
     print()
-    for label, value in info:
-        print(f"  {label}: {value}")
     print(f"  ASR model:    {_DEFAULT_MODELS.get(backend, '')}")
+    if backend == "qwen":
+        with suppress(ImportError):
+            import torch
+            print(f"  PyTorch:      {torch.__version__}")
+    else:
+        from importlib.metadata import version
+        from importlib.util import find_spec
+        if find_spec("mlx_whisper") is not None:
+            with suppress(Exception):
+                print(f"  mlx-whisper:  {version('mlx-whisper')}")
     print(f"  Data dir:     {DATA_DIR}")
     print(f"  DeepSeek URL: {DEEPSEEK_BASE_URL}")
 

@@ -5,10 +5,9 @@ import pytest
 from podmind.transcriber import (
     TranscribeProfile,
     TranscriptResult,
-    _split_audio,
-    _transcribe_episode,
 )
 from podmind.transcriber._shared import _transcript_meta_path, transcript_path
+from podmind.transcriber.backends.qwen import QwenBackend, _split_audio
 
 
 class TestTranscribeProfile:
@@ -30,27 +29,28 @@ class TestTranscribeProfile:
     def test_format_includes_key_fields(self):
         prof = TranscribeProfile(
             model_load_seconds=5.0,
-            ffprobe_seconds=0.1,
-            ffmpeg_split_seconds=2.0,
-            chunk_seconds_used=300,
-            batch_size_used=2,
             chunk_count=4,
             chunk_transcribe_seconds=[30.0, 30.0, 25.0, 20.0],
             total_audio_duration=1200.0,
+            settings={"chunk_seconds": 300, "batch_size": 2, "dtype": "float16"},
+            stages={"ffprobe": 0.1, "ffmpeg_split": 2.0},
         )
         out = prof.format()
         assert "Model load:" in out
         assert "RTF:" in out
-        assert "batch=2" in out
-        assert "Chunk 1/4" in out
-        assert "Chunk 4/4" in out
+        assert "batch_size=2" in out
+        assert "Batch 1/4" in out
+        assert "Batch 4/4" in out
+        assert "min=20.0s" in out
+        assert "avg=26.2s" in out
 
     def test_default_values(self):
         prof = TranscribeProfile()
         assert prof.total_transcribe_seconds == 0.0
         assert prof.rtf == 0.0
-        assert prof.chunk_seconds_used == 600
-        assert prof.batch_size_used == 1
+        assert prof.settings == {}
+        assert prof.stages == {}
+        assert prof.chunk_count == 0
 
 
 class TestSplitAudio:
@@ -58,9 +58,7 @@ class TestSplitAudio:
         """_split_audio should forward chunk_seconds to ffmpeg -segment_time."""
         with patch(
             "podmind.transcriber.backends.qwen.subprocess.run"
-        ) as mock_run, patch.object(
-            _split_audio, "__defaults__", (600,)
-        ):  # ensure default
+        ) as mock_run:
             _split_audio("/fake/audio.m4a", str(tmp_path), chunk_seconds=120)
             args_str = " ".join(str(a) for a in mock_run.call_args[0][0])
             assert "120" in args_str
@@ -72,7 +70,19 @@ class TestSplitAudio:
             with patch("podmind.transcriber.backends.qwen.Path.glob", return_value=[]):
                 _split_audio("/fake/audio.m4a", str(tmp_path))
                 args_str = " ".join(str(a) for a in mock_run.call_args[0][0])
-                assert "600" in args_str
+                assert "30" in args_str
+
+
+def _make_qwen_backend(mock_model):
+    """Create a QwenBackend with a mock model injected."""
+    be = QwenBackend()
+    be._model = mock_model
+    be._model_id = "Qwen/Qwen3-ASR-0.6B"
+    be._chunk_seconds = 30
+    be._batch_size = 1
+    be._max_new_tokens = 0
+    be._dtype = "float16"
+    return be
 
 
 class TestTranscribeEpisode:
@@ -84,20 +94,20 @@ class TestTranscribeEpisode:
         mock_chunk = tmp_path / "chunk_001.wav"
         mock_chunk.touch()
 
+        be = _make_qwen_backend(mock_model)
         with patch("podmind.transcriber.backends.qwen._get_duration", return_value=120.0):
             with patch(
                 "podmind.transcriber.backends.qwen._split_audio",
                 return_value=[mock_chunk],
             ):
-                text, prof = _transcribe_episode(
-                    mock_model,
-                    "69f441cd5390b7cc928acdcc",
+                result = be.transcribe_raw(
                     "/fake/audio.m4a",
+                    language=None,
                     profile=False,
                 )
 
-        assert prof is None
-        assert text == "hello"
+        assert result.profile is None
+        assert result.text == "hello"
 
     def test_returns_profile_when_profile_true(self, tmp_path):
         mock_model = MagicMock()
@@ -112,24 +122,24 @@ class TestTranscribeEpisode:
         for c in mock_chunks:
             c.touch()
 
+        be = _make_qwen_backend(mock_model)
         with patch("podmind.transcriber.backends.qwen._get_duration", return_value=600.0):
             with patch(
                 "podmind.transcriber.backends.qwen._split_audio",
                 return_value=mock_chunks,
             ):
-                text, prof = _transcribe_episode(
-                    mock_model,
-                    "69f441cd5390b7cc928acdcc",
+                result = be.transcribe_raw(
                     "/fake/audio.m4a",
+                    language=None,
                     profile=True,
                     chunk_seconds=300,
                     batch_size=2,
                 )
 
-        assert prof is not None
-        assert prof.chunk_seconds_used == 300
-        assert prof.batch_size_used == 2
-        assert prof.total_audio_duration == 600.0
+        assert result.profile is not None
+        assert result.profile.settings["chunk_seconds"] == 300
+        assert result.profile.settings["batch_size"] == 2
+        assert result.profile.total_audio_duration == 600.0
 
     def test_batch_grouping(self, tmp_path):
         """5 chunks with batch_size=2 should make 3 calls to model.transcribe."""
@@ -143,6 +153,7 @@ class TestTranscribeEpisode:
         for c in chunks:
             c.touch()
 
+        be = _make_qwen_backend(mock_model)
         with patch(
             "podmind.transcriber.backends.qwen._get_duration", return_value=1000.0
         ):
@@ -150,10 +161,9 @@ class TestTranscribeEpisode:
                 "podmind.transcriber.backends.qwen._split_audio",
                 return_value=chunks,
             ):
-                _transcribe_episode(
-                    mock_model,
-                    "69f441cd5390b7cc928acdcc",
+                be.transcribe_raw(
                     "/fake/audio.m4a",
+                    language=None,
                     batch_size=2,
                 )
 
@@ -184,7 +194,8 @@ class TestTranscribeEpisode:
                 with patch(
                     "podmind.transcriber._transcript_meta_path", return_value=meta_path,
                 ):
-                    with patch("podmind.transcriber._atomic_write"):
+                    with patch("podmind.transcriber._atomic_write",
+                               side_effect=lambda p, c: p.write_text(c, encoding="utf-8")):
                         _write_transcript_cache(
                             "69f441cd5390b7cc928acdcc",
                             result,
@@ -241,6 +252,7 @@ class TestTranscriptResult:
         assert r.language is None
         assert r.audio_duration == 0.0
         assert r.profile is None
+        assert r.from_cache is False
 
 
 class TestTranscriptPath:
@@ -273,10 +285,12 @@ class TestTranscriptMetaPath:
 
 
 class TestLanguageNormalization:
-    def test_qwen_passes_through_full_name(self):
+    def test_qwen_maps_iso_and_passes_through_full_name(self):
         from podmind.transcriber.backends.qwen import QwenBackend
         assert QwenBackend.normalize_language("Chinese") == "Chinese"
+        assert QwenBackend.normalize_language("zh") == "Chinese"
         assert QwenBackend.normalize_language("English") == "English"
+        assert QwenBackend.normalize_language("en") == "English"
         assert QwenBackend.normalize_language(None) is None
 
     def test_mlx_whisper_maps_full_to_iso(self):

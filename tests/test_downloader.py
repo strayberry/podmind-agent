@@ -15,7 +15,7 @@ class TestDownloadAudio:
         mock_resp.raise_for_status.return_value = None
 
         with (
-            patch("podmind.downloader.requests.get", return_value=mock_resp),
+            patch("podmind.downloader.requests.Session.get", return_value=mock_resp),
             patch("podmind.downloader.AUDIO_DIR", tmp_path),
             pytest.raises(RuntimeError, match="empty"),
         ):
@@ -29,7 +29,7 @@ class TestDownloadAudio:
         mock_resp.raise_for_status.return_value = None
 
         with (
-            patch("podmind.downloader.requests.get", return_value=mock_resp),
+            patch("podmind.downloader.requests.Session.get", return_value=mock_resp),
             patch("podmind.downloader.AUDIO_DIR", tmp_path),
             pytest.raises(RuntimeError, match="Download incomplete"),
         ):
@@ -58,10 +58,10 @@ class TestDownloadAudio:
         with (
             patch("podmind.downloader.AUDIO_DIR", tmp_path),
             patch("podmind.downloader.tqdm", return_value=mock_tqdm),
-            patch("podmind.downloader.requests") as mock_req,
+            patch("podmind.downloader.requests.Session") as mock_session_class,
             pytest.raises(RuntimeError, match="connection lost"),
         ):
-            mock_req.get.return_value = mock_resp
+            mock_session_class.return_value.get.return_value = mock_resp
             download_audio("69f441cd5390b7cc928acdcc", "https://example.com/audio.m4a")
 
         # No .part files left behind

@@ -104,3 +104,21 @@ def validate_language(value: str | None) -> str | None:
         f"Unsupported language: {value!r}. "
         f"Supported codes: {', '.join(sorted(k for k in _LANGUAGE_MAP if len(k) <= 3))}"
     )
+
+
+def get_language_full(iso_or_name: str) -> str | None:
+    """Map ISO code or full name → canonical full name (for Qwen)."""
+    return _LANGUAGE_MAP.get(iso_or_name.lower())
+
+
+def get_language_iso(name: str) -> str | None:
+    """Map full language name → ISO 639-1 code (for mlx-whisper).
+
+    Returns None if the language is unrecognized.
+    """
+    # Build a reverse map: full_name → iso from the canonical table.
+    # Only uses entries where the key is a 2-3 char ISO code.
+    for iso, full in _LANGUAGE_MAP.items():
+        if len(iso) <= 3 and full.lower() == name.lower():
+            return iso
+    return None

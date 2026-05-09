@@ -1,7 +1,5 @@
 import hashlib
 import json
-import os
-import tempfile
 from importlib import resources
 from pathlib import Path
 
@@ -11,9 +9,9 @@ from .config import (
     DEEPSEEK_API_KEY,
     DEEPSEEK_BASE_URL,
     OUTPUTS_DIR,
-    ensure_dirs,
     validate_episode_id,
 )
+from .io_utils import atomic_write
 
 
 def summary_path(episode_id: str, *, backend: str | None = None) -> Path:
@@ -32,21 +30,6 @@ def _summary_meta_path(episode_id: str, *, backend: str | None = None) -> Path:
 
 def _load_prompt() -> str:
     return (resources.files("podmind.prompts") / "summary.txt").read_text(encoding="utf-8")
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """Write content atomically via a temp file + rename."""
-    ensure_dirs()
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".tmp.")
-    try:
-        try:
-            os.write(fd, content.encode("utf-8"))
-        finally:
-            os.close(fd)
-        Path(tmp).replace(path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
 
 
 # Maximum chars for direct summarization (~25K tokens).
@@ -204,8 +187,8 @@ def summarize(
             raise RuntimeError("DeepSeek returned empty response")
         content = _content
 
-    _atomic_write(out_path, content)
-    meta_path.write_text(json.dumps(current_meta, ensure_ascii=False), encoding="utf-8")
+    atomic_write(out_path, content)
+    atomic_write(meta_path, json.dumps(current_meta, ensure_ascii=False))
     print(f"Summary saved: {out_path}")
 
     return content

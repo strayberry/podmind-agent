@@ -2,46 +2,13 @@
 
 import time
 
+from ...config import get_language_iso
 from .._shared import (
     TranscribeProfile,
     TranscriptResult,
     _get_duration,
 )
 from .base import ASRBackend
-
-# Qwen full-name → Whisper ISO code
-_NAME_TO_ISO: dict[str, str] = {
-    "Chinese": "zh",
-    "English": "en",
-    "Cantonese": "yue",
-    "Japanese": "ja",
-    "Korean": "ko",
-    "Arabic": "ar",
-    "German": "de",
-    "French": "fr",
-    "Spanish": "es",
-    "Portuguese": "pt",
-    "Indonesian": "id",
-    "Italian": "it",
-    "Russian": "ru",
-    "Thai": "th",
-    "Vietnamese": "vi",
-    "Turkish": "tr",
-    "Hindi": "hi",
-    "Malay": "ms",
-    "Dutch": "nl",
-    "Swedish": "sv",
-    "Danish": "da",
-    "Finnish": "fi",
-    "Polish": "pl",
-    "Czech": "cs",
-    "Filipino": "fil",
-    "Persian": "fa",
-    "Greek": "el",
-    "Romanian": "ro",
-    "Hungarian": "hu",
-    "Macedonian": "mk",
-}
 
 
 class MLXWhisperBackend(ASRBackend):
@@ -88,10 +55,9 @@ class MLXWhisperBackend(ASRBackend):
 
         duration = _get_duration(audio_path)
         prof = TranscribeProfile(
-            model_load_seconds=0.0,
             total_audio_duration=duration,
-            chunk_seconds_used=0,
             chunk_count=1,
+            settings={"model": self._model_id},
         ) if profile else None
         if prof:
             prof.chunk_transcribe_seconds = [elapsed]
@@ -110,13 +76,12 @@ class MLXWhisperBackend(ASRBackend):
 
     @staticmethod
     def normalize_language(lang: str | None) -> str | None:
-        """Map Qwen full names (e.g. 'Chinese') to ISO codes (e.g. 'zh')."""
+        """Map full language names (e.g. 'Chinese') to ISO codes (e.g. 'zh')."""
         if lang is None:
             return None
-        mapped = _NAME_TO_ISO.get(lang)
+        mapped = get_language_iso(lang)
         if mapped is not None:
             return mapped
-        # Already an ISO code or unknown — pass through
         if len(lang) <= 3:
             return lang
-        return None  # unrecognized, let Whisper auto-detect
+        return None

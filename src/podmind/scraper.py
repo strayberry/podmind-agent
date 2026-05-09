@@ -5,6 +5,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import EPISODES_DIR, ensure_dirs, validate_episode_id
 
@@ -15,6 +17,24 @@ HEADERS = {
         "Chrome/131.0.0.0 Safari/537.36"
     )
 }
+
+
+def _session_with_retry(
+    retries: int = 3,
+    backoff_factor: float = 1.0,
+    status_forcelist: tuple[int, ...] = (500, 502, 503, 504),
+) -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+        allowed_methods={"GET"},
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 @dataclass
@@ -61,7 +81,7 @@ def fetch_episode(url: str) -> EpisodeInfo:
     episode_id = extract_episode_id(url)
     page_url = f"https://www.xiaoyuzhoufm.com/episode/{episode_id}"
 
-    resp = requests.get(page_url, headers=HEADERS, timeout=30)
+    resp = _session_with_retry().get(page_url, headers=HEADERS, timeout=30)
     resp.raise_for_status()
 
     match = re.search(

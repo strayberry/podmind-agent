@@ -3,7 +3,9 @@ import tempfile
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
 from tqdm import tqdm
+from urllib3.util.retry import Retry
 
 from .config import AUDIO_DIR, ensure_dirs, validate_episode_id
 
@@ -23,7 +25,16 @@ def download_audio(episode_id: str, audio_url: str, force: bool = False) -> Path
 
     ensure_dirs()
 
-    resp = requests.get(audio_url, stream=True, timeout=120)
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1.0,
+        status_forcelist=(500, 502, 503, 504),
+        allowed_methods={"GET"},
+    )
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+    resp = session.get(audio_url, stream=True, timeout=120)
     resp.raise_for_status()
 
     total = int(resp.headers.get("content-length", 0))
