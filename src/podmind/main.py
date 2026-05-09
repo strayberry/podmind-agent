@@ -75,6 +75,10 @@ def _check_backend_issues(backend: str) -> list[str]:
         from importlib.util import find_spec
         if find_spec("mlx_whisper") is None:
             issues.append("mlx-whisper not installed")
+    elif backend == "mlx-qwen":
+        from importlib.util import find_spec
+        if find_spec("mlx_audio") is None:
+            issues.append("mlx-audio not installed — mlx-qwen backend unavailable")
     return issues
 
 
@@ -104,7 +108,8 @@ def _exit_on_preflight_issues(issues: list[str]) -> None:
 
 def _add_asr_args(parser: argparse.ArgumentParser, *, qwen: bool = True) -> None:
     """Add --asr-backend and --asr-model to a subparser."""
-    parser.add_argument("--asr-backend", choices=["qwen", "mlx-whisper"], default="mlx-whisper",
+    parser.add_argument("--asr-backend", choices=["qwen", "mlx-whisper", "mlx-qwen"],
+                        default="mlx-whisper",
                         help="ASR backend (default: mlx-whisper)")
     parser.add_argument("--asr-model", default=None,
                         help="ASR model ID (default: per-backend default)")
@@ -424,14 +429,14 @@ def main() -> None:
     p_summ.add_argument("episode_id", help="Episode ID (from URL)")
     p_summ.add_argument("--model", default="deepseek-v4-pro", help="LLM model for summarization")
     p_summ.add_argument("--force", action="store_true", help="Re-summarize even if cached")
-    p_summ.add_argument("--asr-backend", choices=["qwen", "mlx-whisper"], default="mlx-whisper",
+    p_summ.add_argument("--asr-backend", choices=["qwen", "mlx-whisper", "mlx-qwen"],
+                        default="mlx-whisper",
                         help="ASR backend used for transcription (default: mlx-whisper)")
     p_summ.set_defaults(func=cmd_summarize)
 
     # podmind batch-transcribe
     p_batch = sub.add_parser("batch-transcribe",
-                             help="Transcribe multiple episodes in one process "
-                                  "(Qwen loads once; mlx-whisper reuses internal cache)")
+                             help="Transcribe multiple episodes in one process")
     p_batch.add_argument("episode_ids", nargs="+", help="Episode IDs to transcribe")
     p_batch.add_argument("--language", type=validate_language, default=None,
                         help="ASR language (zh, en, ja, ko, yue, or full name like Chinese)")
@@ -446,7 +451,8 @@ def main() -> None:
 
     # podmind doctor
     p_doctor = sub.add_parser("doctor", help="Run preflight checks")
-    p_doctor.add_argument("--asr-backend", choices=["qwen", "mlx-whisper"], default="mlx-whisper",
+    p_doctor.add_argument("--asr-backend", choices=["qwen", "mlx-whisper", "mlx-qwen"],
+                          default="mlx-whisper",
                           help="Backend to check dependencies for (default: mlx-whisper)")
     p_doctor.set_defaults(func=cmd_doctor)
 
@@ -457,9 +463,9 @@ def main() -> None:
                          help="Seconds to clip for benchmark (default: 300)")
     p_bench.add_argument("--language", type=validate_language, default=None,
                          help="ASR language")
-    p_bench.add_argument("--backends", nargs="+", default=["qwen", "mlx-whisper"],
-                         choices=["qwen", "mlx-whisper"],
-                         help="Backends to compare (default: qwen mlx-whisper)")
+    p_bench.add_argument("--backends", nargs="+", default=["mlx-whisper", "mlx-qwen", "qwen"],
+                         choices=["qwen", "mlx-whisper", "mlx-qwen"],
+                         help="Backends to compare (default: all three)")
     _add_qwen_args(p_bench)
     p_bench.add_argument("--profile", action="store_true",
                          help="Print timing profile per backend")
@@ -508,13 +514,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             asr_required.append(("torch device (mps)", device_ok))
         except ImportError:
             asr_required.append(("torch", False))
-    else:
-        from importlib.metadata import version
+    elif backend == "mlx-whisper":
         from importlib.util import find_spec
-        if find_spec("mlx_whisper") is not None:
-            asr_required.append(("mlx-whisper", True))
-        else:
-            asr_required.append(("mlx-whisper", False))
+        asr_required.append(("mlx-whisper", find_spec("mlx_whisper") is not None))
+    elif backend == "mlx-qwen":
+        from importlib.util import find_spec
+        asr_required.append(("mlx-audio", find_spec("mlx_audio") is not None))
 
     print("  ASR required:")
     for name, ok in asr_required:
@@ -542,12 +547,18 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         with suppress(ImportError):
             import torch
             print(f"  PyTorch:      {torch.__version__}")
-    else:
+    elif backend == "mlx-whisper":
         from importlib.metadata import version
         from importlib.util import find_spec
         if find_spec("mlx_whisper") is not None:
             with suppress(Exception):
                 print(f"  mlx-whisper:  {version('mlx-whisper')}")
+    elif backend == "mlx-qwen":
+        from importlib.metadata import version
+        from importlib.util import find_spec
+        if find_spec("mlx_audio") is not None:
+            with suppress(Exception):
+                print(f"  mlx-audio:    {version('mlx-audio')}")
     print(f"  Data dir:     {DATA_DIR}")
     print(f"  DeepSeek URL: {DEEPSEEK_BASE_URL}")
 

@@ -353,8 +353,63 @@ class TestBackendRegistry:
         from podmind.transcriber.backends.mlx_whisper import MLXWhisperBackend
         assert _get_backend_class("mlx-whisper") is MLXWhisperBackend
 
+    def test_get_backend_class_mlx_qwen(self):
+        from podmind.transcriber import _get_backend_class
+        from podmind.transcriber.backends.mlx_qwen import MLXQwenBackend
+        assert _get_backend_class("mlx-qwen") is MLXQwenBackend
+
     def test_get_backend_class_unknown_raises(self):
         from podmind.config import PodmindError
         from podmind.transcriber import _get_backend_class
         with pytest.raises(PodmindError, match="Unknown ASR backend"):
             _get_backend_class("nonexistent")
+
+
+class TestMLXQwenBackend:
+    def test_language_normalization(self):
+        from podmind.transcriber.backends.mlx_qwen import MLXQwenBackend
+        assert MLXQwenBackend.normalize_language("zh") == "Chinese"
+        assert MLXQwenBackend.normalize_language("Chinese") == "Chinese"
+        assert MLXQwenBackend.normalize_language("en") == "English"
+        assert MLXQwenBackend.normalize_language(None) is None
+
+    def test_transcript_path_suffixed(self, tmp_path):
+        from podmind.transcriber._shared import _transcript_meta_path, transcript_path
+        with patch("podmind.transcriber._shared.TRANSCRIPTS_DIR", tmp_path):
+            p = transcript_path("69f441cd5390b7cc928acdcc", backend="mlx-qwen")
+            assert p == tmp_path / "69f441cd5390b7cc928acdcc.mlx-qwen.txt"
+            mp = _transcript_meta_path("69f441cd5390b7cc928acdcc", backend="mlx-qwen")
+            assert mp == tmp_path / "69f441cd5390b7cc928acdcc.mlx-qwen.meta.json"
+
+    def test_default_model_in_registry(self):
+        from podmind.transcriber import _DEFAULT_MODELS
+        assert "mlx-qwen" in _DEFAULT_MODELS
+        assert _DEFAULT_MODELS["mlx-qwen"] == "mlx-community/Qwen3-ASR-0.6B-4bit"
+
+    def test_cache_hit_skips_model_load(self, tmp_path):
+        """Cache hit returns cached text without loading model."""
+        from podmind.transcriber import _check_transcript_cache
+
+        out_path = tmp_path / "test.mlx-qwen.txt"
+        out_path.write_text("cached mlx-qwen text", encoding="utf-8")
+        meta_path = tmp_path / "test.mlx-qwen.meta.json"
+        meta_path.write_text(
+            '{"backend":"mlx-qwen","backend_model":"mlx-community/Qwen3-ASR-0.6B-4bit",'
+            '"language":"Chinese","audio_sha256":"abc123"}',
+            encoding="utf-8",
+        )
+
+        with patch("podmind.transcriber._file_sha256", return_value="abc123"):
+            with patch("podmind.transcriber.transcript_path", return_value=out_path):
+                with patch(
+                    "podmind.transcriber._transcript_meta_path", return_value=meta_path,
+                ):
+                    text = _check_transcript_cache(
+                        "69f441cd5390b7cc928acdcc",
+                        "/fake/audio.m4a",
+                        backend="mlx-qwen",
+                        backend_model="mlx-community/Qwen3-ASR-0.6B-4bit",
+                        language="Chinese",
+                    )
+
+        assert text == "cached mlx-qwen text"

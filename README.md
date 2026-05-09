@@ -15,12 +15,13 @@ First run downloads the ASR model (~1.6 GB) once. Subsequent runs hit the cache.
 
 ## ASR Backends
 
-| Backend | Default | Speed (1h audio) | Quality |
-|---|---|---|---|
-| `mlx-whisper` | ✅ | ~2.5 min | Fast, but may drop punctuation and hallucinate on Chinese |
-| `qwen` | | ~6.5 min | Higher accuracy, proper punctuation, cleaner output |
+| Backend | Default | Speed (1h audio) | RTF | Output (1h) | Quality |
+|---|---|---|---|---|---|
+| `mlx-whisper` | ✅ | ~2.5 min | 0.043 | ~19K chars | Fast, but may drop punctuation and hallucinate on Chinese |
+| `mlx-qwen` | | ~3 min | 0.051 | ~12K chars | Good accuracy and punctuation, output slightly condensed |
+| `qwen` | | ~6 min | 0.105 | ~21K chars | Highest accuracy, most detailed output |
 
-Both require Apple Silicon. Qwen additionally needs `torch` and `ffmpeg`.
+All require Apple Silicon. `qwen` needs `torch` and `ffmpeg`. `mlx-qwen` needs `mlx-audio`.
 
 ## Setup
 
@@ -28,7 +29,8 @@ Both require Apple Silicon. Qwen additionally needs `torch` and `ffmpeg`.
 - [DeepSeek API key](https://platform.deepseek.com) for summarization
 
 ```bash
-pip install -e .
+pip install -e .              # mlx-whisper + qwen
+pip install -e ".[mlx-qwen]"  # + mlx-qwen backend
 cp .env.example .env
 ```
 

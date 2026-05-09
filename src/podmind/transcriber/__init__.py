@@ -31,6 +31,7 @@ _DEFAULT_BACKEND = "mlx-whisper"
 _DEFAULT_MODELS: dict[str, str] = {
     "qwen": "Qwen/Qwen3-ASR-0.6B",
     "mlx-whisper": "mlx-community/whisper-turbo",
+    "mlx-qwen": "mlx-community/Qwen3-ASR-0.6B-4bit",
 }
 
 
@@ -42,6 +43,9 @@ def _get_backend_class(name: str):
     if name == "mlx-whisper":
         from .backends.mlx_whisper import MLXWhisperBackend
         return MLXWhisperBackend
+    if name == "mlx-qwen":
+        from .backends.mlx_qwen import MLXQwenBackend
+        return MLXQwenBackend
     raise PodmindError(f"Unknown ASR backend: {name!r}")
 
 
