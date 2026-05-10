@@ -11,17 +11,17 @@ cp .env.example .env          # add your DEEPSEEK_API_KEY
 podmind full "https://www.xiaoyuzhoufm.com/episode/69f441cd5390b7cc928acdcc" --language zh
 ```
 
-First run downloads the ASR model (~1.6 GB) once. Subsequent runs hit the cache.
+First run downloads the ASR model (~0.7–1.8 GB depending on backend). Subsequent runs hit the cache.
 
 ## ASR Backends
 
-| Backend | Default | Speed (1h audio) | RTF | Output (1h) | Quality |
-|---|---|---|---|---|---|
-| `mlx-whisper` | ✅ | ~2.5 min | 0.043 | ~19K chars | Fast, but may drop punctuation and hallucinate on Chinese |
-| `mlx-qwen` | | ~3 min | 0.051 | ~12K chars | Good accuracy and punctuation, output slightly condensed |
-| `qwen` | | ~6 min | 0.105 | ~21K chars | Highest accuracy, most detailed output |
+| Backend | Model | Size | Default | Speed (1h audio) | RTF | Output (1h) | Quality |
+|---|---|---|---|---|---|---|---|
+| `mlx-qwen-asr` | `mlx-community/Qwen3-ASR-0.6B-4bit` | 680 MB | ✅ | ~3 min | 0.051 | ~12K chars | Good accuracy and punctuation, output slightly condensed |
+| `mlx-whisper` | `mlx-community/whisper-turbo` | 1.5 GB | | ~2.5 min | 0.043 | ~19K chars | Fast, but may drop punctuation and hallucinate on Chinese |
+| `qwen-asr` | `Qwen/Qwen3-ASR-0.6B` | 1.8 GB | | ~6 min | 0.105 | ~21K chars | Highest accuracy, most detailed output |
 
-All require Apple Silicon. `qwen` needs `torch` and `ffmpeg`. `mlx-qwen` needs `mlx-audio`.
+All require Apple Silicon. `qwen-asr` needs `torch` and `ffmpeg`. `mlx-qwen-asr` needs `mlx-audio`.
 
 ## Setup
 
@@ -29,8 +29,7 @@ All require Apple Silicon. `qwen` needs `torch` and `ffmpeg`. `mlx-qwen` needs `
 - [DeepSeek API key](https://platform.deepseek.com) for summarization
 
 ```bash
-pip install -e .              # mlx-whisper + qwen
-pip install -e ".[mlx-qwen]"  # + mlx-qwen backend
+pip install -e .              # includes the default mlx-qwen-asr backend
 cp .env.example .env
 ```
 
@@ -56,7 +55,7 @@ podmind transcribe <id> --language zh --profile
 podmind summarize <id>
 ```
 
-Use `--asr-backend qwen` for higher quality. Replace `<id>` with the 24-char hex episode ID from the URL.
+Use `--asr-backend qwen-asr` for highest quality. Replace `<id>` with the 24-char hex episode ID from the URL.
 
 ### Batch
 
@@ -68,14 +67,14 @@ podmind batch-transcribe <id1> <id2> --language zh --profile
 
 ```bash
 podmind bench <id> --language zh --profile
-podmind bench <id> --backends qwen --clip-seconds 120
+podmind bench <id> --backends qwen-asr --clip-seconds 120
 ```
 
 ### Preflight check
 
 ```bash
 podmind doctor
-podmind doctor --asr-backend qwen
+podmind doctor --asr-backend qwen-asr
 ```
 
 ## CLI Reference
@@ -83,7 +82,7 @@ podmind doctor --asr-backend qwen
 | Flag | Commands | Description |
 |---|---|---|
 | `--language` | full, transcribe, batch, bench | `zh`, `en`, `ja`, `ko`, or full name (`Chinese`) |
-| `--asr-backend` | all except fetch | `mlx-whisper` (default) or `qwen` |
+| `--asr-backend` | all except fetch | `mlx-qwen-asr` (default), `mlx-whisper`, or `qwen-asr` |
 | `--asr-model` | full, transcribe, batch | Override default model ID |
 | `--model` | full, summarize | LLM model (default: `deepseek-v4-pro`) |
 | `--profile` | full, transcribe, batch, bench | Print timing breakdown (RTF, chunk times) |
@@ -112,13 +111,15 @@ data/
 └── outputs/       # LLM summaries
 ```
 
-Each backend writes to separate paths, so results from both backends coexist:
+Each backend writes to separate paths, so results from all backends coexist:
 
 ```
-data/transcripts/<id>.txt                  # qwen
-data/transcripts/<id>.mlx-whisper.txt      # mlx-whisper
-data/outputs/<id>_summary.md                # qwen
-data/outputs/<id>_summary.mlx-whisper.md    # mlx-whisper
+data/transcripts/<id>.txt                     # qwen-asr
+data/transcripts/<id>.mlx-whisper.txt         # mlx-whisper
+data/transcripts/<id>.mlx-qwen-asr.txt        # mlx-qwen-asr
+data/outputs/<id>_summary.md                   # qwen-asr
+data/outputs/<id>_summary.mlx-whisper.md       # mlx-whisper
+data/outputs/<id>_summary.mlx-qwen-asr.md      # mlx-qwen-asr
 ```
 
 ## Cache

@@ -47,7 +47,6 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
 # ASR config (overridable via env)
-ASR_MODEL_ID = os.getenv("PODMIND_ASR_MODEL", "Qwen/Qwen3-ASR-0.6B")
 ASR_DEVICE = os.getenv("PODMIND_ASR_DEVICE", "mps")
 
 
@@ -84,9 +83,6 @@ _LANGUAGE_MAP: dict[str, str] = {
     "hu": "Hungarian", "hungarian": "Hungarian",
     "mk": "Macedonian", "macedonian": "Macedonian",
 }
-
-_SUPPORTED = sorted(set(_LANGUAGE_MAP.values()))
-
 
 def validate_language(value: str | None) -> str | None:
     """Normalize a language code/name to the form qwen-asr expects.

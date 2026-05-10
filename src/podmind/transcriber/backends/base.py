@@ -17,7 +17,7 @@ class ASRBackend(ABC):
     handles caching and file output.
     """
 
-    name: str  # set by subclasses, e.g. "qwen", "mlx-whisper"
+    name: str  # set by subclasses, e.g. "qwen-asr", "mlx-whisper"
 
     # ------------------------------------------------------------------
     # Required interface
@@ -49,6 +49,11 @@ class ASRBackend(ABC):
     def normalize_language(lang: str | None) -> str | None:
         """Convert a unified language code to the backend's expected format."""
         ...
+
+    @staticmethod
+    def cache_extra_meta(**kwargs: object) -> dict | None:
+        """Return backend-specific cache keys for the current settings."""
+        return None
 
     # ------------------------------------------------------------------
     # Convenience

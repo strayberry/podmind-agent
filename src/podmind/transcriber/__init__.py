@@ -6,6 +6,8 @@ pure inference via ``transcribe_raw()``.
 
 import json
 import warnings
+from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 
 from ..config import PodmindError
@@ -27,26 +29,83 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="librosa")
 # Backend registry
 # ---------------------------------------------------------------------------
 
-_DEFAULT_BACKEND = "mlx-whisper"
+@dataclass(frozen=True)
+class BackendSpec:
+    name: str
+    default_model: str
+    module: str
+    class_name: str
+    dependency_module: str
+    requires_ffmpeg: bool = False
+    requires_mps: bool = False
+    plain_cache: bool = False
+
+
+_DEFAULT_BACKEND = "mlx-qwen-asr"
+_BACKEND_SPECS: dict[str, BackendSpec] = {
+    "mlx-qwen-asr": BackendSpec(
+        name="mlx-qwen-asr",
+        default_model="mlx-community/Qwen3-ASR-0.6B-4bit",
+        module="podmind.transcriber.backends.mlx_qwen",
+        class_name="MLXQwenBackend",
+        dependency_module="mlx_audio",
+    ),
+    "mlx-whisper": BackendSpec(
+        name="mlx-whisper",
+        default_model="mlx-community/whisper-turbo",
+        module="podmind.transcriber.backends.mlx_whisper",
+        class_name="MLXWhisperBackend",
+        dependency_module="mlx_whisper",
+    ),
+    "qwen-asr": BackendSpec(
+        name="qwen-asr",
+        default_model="Qwen/Qwen3-ASR-0.6B",
+        module="podmind.transcriber.backends.qwen",
+        class_name="QwenBackend",
+        dependency_module="qwen_asr",
+        requires_ffmpeg=True,
+        requires_mps=True,
+        plain_cache=True,
+    ),
+}
+ASR_BACKENDS: tuple[str, ...] = tuple(_BACKEND_SPECS)
 _DEFAULT_MODELS: dict[str, str] = {
-    "qwen": "Qwen/Qwen3-ASR-0.6B",
-    "mlx-whisper": "mlx-community/whisper-turbo",
-    "mlx-qwen": "mlx-community/Qwen3-ASR-0.6B-4bit",
+    name: spec.default_model for name, spec in _BACKEND_SPECS.items()
 }
 
 
 def _get_backend_class(name: str):
     """Import and return a backend class by name (lazy)."""
-    if name == "qwen":
-        from .backends.qwen import QwenBackend
-        return QwenBackend
-    if name == "mlx-whisper":
-        from .backends.mlx_whisper import MLXWhisperBackend
-        return MLXWhisperBackend
-    if name == "mlx-qwen":
-        from .backends.mlx_qwen import MLXQwenBackend
-        return MLXQwenBackend
-    raise PodmindError(f"Unknown ASR backend: {name!r}")
+    try:
+        spec = _BACKEND_SPECS[name]
+    except KeyError:
+        raise PodmindError(f"Unknown ASR backend: {name!r}") from None
+    module = import_module(spec.module)
+    return getattr(module, spec.class_name)
+
+
+def get_backend_spec(name: str) -> BackendSpec:
+    try:
+        return _BACKEND_SPECS[name]
+    except KeyError:
+        raise PodmindError(f"Unknown ASR backend: {name!r}") from None
+
+
+def _cache_extra_meta(
+    backend: str,
+    *,
+    chunk_seconds: int = 30,
+    batch_size: int = 1,
+    max_new_tokens: int = 0,
+    dtype: str = "",
+) -> dict | None:
+    backend_cls = _get_backend_class(backend)
+    return backend_cls.cache_extra_meta(
+        chunk_seconds=chunk_seconds,
+        batch_size=batch_size,
+        max_new_tokens=max_new_tokens,
+        dtype=dtype or "float16",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +178,7 @@ def _check_transcript_cache(
                 return out_path.read_text(encoding="utf-8")
             # Old-format Qwen cache (pre-pluggable-backend): meta has
             # "asr_model" instead of "backend"/"backend_model".
-            if (backend == "qwen"
+            if (backend == "qwen-asr"
                     and "backend" not in saved
                     and saved.get("audio_sha256") == current_meta.get("audio_sha256")
                     and saved.get("language") == current_meta.get("language")
@@ -137,7 +196,7 @@ def _check_transcript_cache(
     else:
         # Only accept missing meta for legacy plain-path (qwen / no backend).
         # Suffixed backends (mlx-whisper) must have a matching meta to hit cache.
-        if not backend or backend == "qwen":
+        if not backend or get_backend_spec(backend).plain_cache:
             print(
                 f"Transcript already exists: {out_path} "
                 "(no meta; re-run with --force to refresh)"
@@ -194,56 +253,22 @@ def transcribe(
     """
     audio_path = str(audio_path)
     model_id = backend_model or _DEFAULT_MODELS.get(backend, "")
-    backend_cls = _get_backend_class(backend)
-
-    # Normalize language for this backend
-    lang = backend_cls.normalize_language(language)
-
-    # Build backend-specific extra meta for cache key
-    if backend == "qwen":
-        from .backends.qwen import _default_max_new_tokens
-        resolved_tokens = max_new_tokens or _default_max_new_tokens(chunk_seconds)
-        extra_meta: dict | None = {
-            "chunk_seconds": chunk_seconds,
-            "batch_size": batch_size,
-            "max_new_tokens": resolved_tokens,
-            "dtype": dtype or "float16",
-        }
-    else:
-        extra_meta = None
-
-    # --- cache check (no model loaded yet) ---
-    cached = _check_transcript_cache(
-        episode_id, audio_path,
-        backend=backend, backend_model=model_id,
-        language=lang, force=force,
-        extra_meta=extra_meta,
-    )
-    if cached is not None:
-        return cached
-
-    # --- load model ---
-    be = _instantiate_backend(
-        backend, model_id, chunk_seconds, batch_size,
-        max_new_tokens=max_new_tokens, dtype=dtype,
-    )
-
-    # --- transcribe (pure inference, no cache / no I/O) ---
-    result = be.transcribe_raw(
-        audio_path,
-        language=lang,
-        profile=profile,
+    session = ASRSession(
+        backend,
+        model_id,
+        language,
         chunk_seconds=chunk_seconds,
         batch_size=batch_size,
-        max_new_tokens=max_new_tokens,
+        max_new_tokens=max_new_tokens, dtype=dtype,
     )
-
-    # --- cache write (single place for all persistence) ---
-    _write_transcript_cache(episode_id, result, audio_path, lang, extra_meta)
-
+    result = session.transcribe_episode(
+        episode_id,
+        audio_path,
+        force=force,
+        profile=profile,
+    )
     if profile and result.profile:
         print(result.profile.format())
-
     return result.text
 
 
@@ -334,16 +359,13 @@ class ASRSession:
         return self._be
 
     def _extra_meta(self) -> dict | None:
-        if self._backend == "qwen":
-            from .backends.qwen import _default_max_new_tokens
-            resolved = self._max_new_tokens or _default_max_new_tokens(self._chunk_seconds)
-            return {
-                "chunk_seconds": self._chunk_seconds,
-                "batch_size": self._batch_size,
-                "max_new_tokens": resolved,
-                "dtype": self._dtype,
-            }
-        return None
+        return _cache_extra_meta(
+            self._backend,
+            chunk_seconds=self._chunk_seconds,
+            batch_size=self._batch_size,
+            max_new_tokens=self._max_new_tokens,
+            dtype=self._dtype,
+        )
 
 
 def _instantiate_backend(

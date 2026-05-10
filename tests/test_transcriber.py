@@ -1,3 +1,6 @@
+import sys
+import types
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -183,7 +186,7 @@ class TestTranscribeEpisode:
         meta_path = tmp_path / "test.meta.json"
         result = TranscriptResult(
             text="x",
-            backend="qwen",
+            backend="qwen-asr",
             model="Qwen/Qwen3-ASR-0.6B",
         )
 
@@ -208,7 +211,7 @@ class TestTranscribeEpisode:
         meta = json.loads(meta_path.read_text())
         assert meta["chunk_seconds"] == 300
         assert meta["batch_size"] == 2
-        assert meta["backend"] == "qwen"
+        assert meta["backend"] == "qwen-asr"
 
     def test_cache_hit_returns_same_text(self, tmp_path):
         """_check_transcript_cache returns text on meta match."""
@@ -218,7 +221,7 @@ class TestTranscribeEpisode:
         out_path.write_text("cached text", encoding="utf-8")
         meta_path = tmp_path / "test.meta.json"
         meta_path.write_text(
-            '{"backend":"qwen","backend_model":"test",'
+            '{"backend":"qwen-asr","backend_model":"test",'
             '"language":null,"audio_sha256":"abc123",'
             '"chunk_seconds":600,"batch_size":1}',
             encoding="utf-8",
@@ -234,7 +237,7 @@ class TestTranscribeEpisode:
                     text = _check_transcript_cache(
                         "69f441cd5390b7cc928acdcc",
                         "/fake/audio.m4a",
-                        backend="qwen",
+                        backend="qwen-asr",
                         backend_model="test",
                         extra_meta={"chunk_seconds": 600, "batch_size": 1},
                     )
@@ -263,7 +266,7 @@ class TestTranscriptPath:
 
     def test_qwen_backend_uses_plain_path(self, tmp_path):
         with patch("podmind.transcriber._shared.TRANSCRIPTS_DIR", tmp_path):
-            p = transcript_path("69f441cd5390b7cc928acdcc", backend="qwen")
+            p = transcript_path("69f441cd5390b7cc928acdcc", backend="qwen-asr")
             assert p == tmp_path / "69f441cd5390b7cc928acdcc.txt"
 
     def test_mlx_whisper_backend_uses_suffixed_path(self, tmp_path):
@@ -335,7 +338,7 @@ class TestBuildMeta:
         ):
             meta = _build_meta(
                 "/fake/audio.m4a", None,
-                backend="qwen", backend_model="Qwen/Qwen3-ASR-0.6B",
+                backend="qwen-asr", backend_model="Qwen/Qwen3-ASR-0.6B",
                 extra_meta={"chunk_seconds": 300, "batch_size": 2},
             )
         assert meta["chunk_seconds"] == 300
@@ -346,7 +349,7 @@ class TestBackendRegistry:
     def test_get_backend_class_qwen(self):
         from podmind.transcriber import _get_backend_class
         from podmind.transcriber.backends.qwen import QwenBackend
-        assert _get_backend_class("qwen") is QwenBackend
+        assert _get_backend_class("qwen-asr") is QwenBackend
 
     def test_get_backend_class_mlx_whisper(self):
         from podmind.transcriber import _get_backend_class
@@ -356,7 +359,7 @@ class TestBackendRegistry:
     def test_get_backend_class_mlx_qwen(self):
         from podmind.transcriber import _get_backend_class
         from podmind.transcriber.backends.mlx_qwen import MLXQwenBackend
-        assert _get_backend_class("mlx-qwen") is MLXQwenBackend
+        assert _get_backend_class("mlx-qwen-asr") is MLXQwenBackend
 
     def test_get_backend_class_unknown_raises(self):
         from podmind.config import PodmindError
@@ -376,25 +379,25 @@ class TestMLXQwenBackend:
     def test_transcript_path_suffixed(self, tmp_path):
         from podmind.transcriber._shared import _transcript_meta_path, transcript_path
         with patch("podmind.transcriber._shared.TRANSCRIPTS_DIR", tmp_path):
-            p = transcript_path("69f441cd5390b7cc928acdcc", backend="mlx-qwen")
-            assert p == tmp_path / "69f441cd5390b7cc928acdcc.mlx-qwen.txt"
-            mp = _transcript_meta_path("69f441cd5390b7cc928acdcc", backend="mlx-qwen")
-            assert mp == tmp_path / "69f441cd5390b7cc928acdcc.mlx-qwen.meta.json"
+            p = transcript_path("69f441cd5390b7cc928acdcc", backend="mlx-qwen-asr")
+            assert p == tmp_path / "69f441cd5390b7cc928acdcc.mlx-qwen-asr.txt"
+            mp = _transcript_meta_path("69f441cd5390b7cc928acdcc", backend="mlx-qwen-asr")
+            assert mp == tmp_path / "69f441cd5390b7cc928acdcc.mlx-qwen-asr.meta.json"
 
     def test_default_model_in_registry(self):
         from podmind.transcriber import _DEFAULT_MODELS
-        assert "mlx-qwen" in _DEFAULT_MODELS
-        assert _DEFAULT_MODELS["mlx-qwen"] == "mlx-community/Qwen3-ASR-0.6B-4bit"
+        assert "mlx-qwen-asr" in _DEFAULT_MODELS
+        assert _DEFAULT_MODELS["mlx-qwen-asr"] == "mlx-community/Qwen3-ASR-0.6B-4bit"
 
     def test_cache_hit_skips_model_load(self, tmp_path):
         """Cache hit returns cached text without loading model."""
         from podmind.transcriber import _check_transcript_cache
 
-        out_path = tmp_path / "test.mlx-qwen.txt"
+        out_path = tmp_path / "test.mlx-qwen-asr.txt"
         out_path.write_text("cached mlx-qwen text", encoding="utf-8")
-        meta_path = tmp_path / "test.mlx-qwen.meta.json"
+        meta_path = tmp_path / "test.mlx-qwen-asr.meta.json"
         meta_path.write_text(
-            '{"backend":"mlx-qwen","backend_model":"mlx-community/Qwen3-ASR-0.6B-4bit",'
+            '{"backend":"mlx-qwen-asr","backend_model":"mlx-community/Qwen3-ASR-0.6B-4bit",'
             '"language":"Chinese","audio_sha256":"abc123"}',
             encoding="utf-8",
         )
@@ -407,9 +410,50 @@ class TestMLXQwenBackend:
                     text = _check_transcript_cache(
                         "69f441cd5390b7cc928acdcc",
                         "/fake/audio.m4a",
-                        backend="mlx-qwen",
+                        backend="mlx-qwen-asr",
                         backend_model="mlx-community/Qwen3-ASR-0.6B-4bit",
                         language="Chinese",
                     )
 
         assert text == "cached mlx-qwen text"
+
+    def test_transcribe_raw_cleans_temp_file_on_failure(self, tmp_path):
+        from podmind.transcriber.backends.mlx_qwen import MLXQwenBackend
+
+        tmp_file = tmp_path / "mlx_qwen_output.txt"
+        tmp_file.write_text("partial", encoding="utf-8")
+
+        class TempFile:
+            def __enter__(self):
+                return SimpleNamespace(name=str(tmp_file))
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        generate_mod = types.ModuleType("mlx_audio.stt.generate")
+
+        def fail_generate_transcription(**kwargs):
+            raise RuntimeError("generation failed")
+
+        generate_mod.generate_transcription = fail_generate_transcription
+
+        be = MLXQwenBackend()
+        be._model = object()
+        be._model_id = "mlx-community/Qwen3-ASR-0.6B-4bit"
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "mlx_audio": types.ModuleType("mlx_audio"),
+                    "mlx_audio.stt": types.ModuleType("mlx_audio.stt"),
+                    "mlx_audio.stt.generate": generate_mod,
+                },
+            ),
+            patch("podmind.transcriber.backends.mlx_qwen._get_duration", return_value=1.0),
+            patch("tempfile.NamedTemporaryFile", return_value=TempFile()),
+            pytest.raises(RuntimeError, match="generation failed"),
+        ):
+            be.transcribe_raw("/fake/audio.m4a")
+
+        assert not tmp_file.exists()

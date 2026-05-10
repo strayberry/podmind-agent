@@ -18,18 +18,18 @@ from ..io_utils import atomic_write as _atomic_write  # noqa: F401 — re-export
 def transcript_path(episode_id: str, *, backend: str | None = None) -> Path:
     """Return the transcript file path for an episode.
 
-    When *backend* is None or ``"qwen"``, uses the plain path for backward
+    When *backend* is None or ``"qwen-asr"``, uses the plain path for backward
     compatibility.  Other backends get a suffix: ``{id}.{backend}.txt``.
     """
     validate_episode_id(episode_id)
-    if backend and backend != "qwen":
+    if backend and backend != "qwen-asr":
         return TRANSCRIPTS_DIR / f"{episode_id}.{backend}.txt"
     return TRANSCRIPTS_DIR / f"{episode_id}.txt"
 
 
 def _transcript_meta_path(episode_id: str, *, backend: str | None = None) -> Path:
     validate_episode_id(episode_id)
-    if backend and backend != "qwen":
+    if backend and backend != "qwen-asr":
         return TRANSCRIPTS_DIR / f"{episode_id}.{backend}.meta.json"
     return TRANSCRIPTS_DIR / f"{episode_id}.meta.json"
 

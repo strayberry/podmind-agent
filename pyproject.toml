@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "torch>=2.0",
     "mlx-whisper>=0.4",
+    "mlx-audio>=0.4",
     "transformers==4.57.6",
 ]
 
@@ -34,10 +35,6 @@ dev = [
     "pytest>=8.0",
     "pytest-mock>=3.0",
 ]
-mlx-qwen = [
-    "mlx-audio>=0.4",
-]
-
 [tool.ruff]
 src = ["src"]
 line-length = 100
@@ -58,7 +55,14 @@ no_implicit_optional = true
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-module = ["requests", "requests.adapters", "tqdm", "qwen_asr.*", "mlx_whisper"]
+module = [
+    "requests",
+    "requests.adapters",
+    "tqdm",
+    "qwen_asr.*",
+    "mlx_whisper",
+    "mlx_audio.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

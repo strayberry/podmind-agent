@@ -1,6 +1,8 @@
 """MLX Qwen3-ASR backend via mlx-audio (4-bit quantized)."""
 
+import tempfile
 import time
+from pathlib import Path
 
 from ...config import PodmindError, get_language_full
 from .._shared import (
@@ -14,7 +16,7 @@ from .base import ASRBackend
 class MLXQwenBackend(ASRBackend):
     """Qwen3-ASR 4-bit via mlx-audio — Apple MLX framework."""
 
-    name = "mlx-qwen"
+    name = "mlx-qwen-asr"
 
     def __init__(self) -> None:
         self._model: object = None
@@ -57,20 +59,20 @@ class MLXQwenBackend(ASRBackend):
         duration = _get_duration(audio_path)
         print(f"Audio duration: {duration:.0f}s ({duration / 60:.1f} min)")
 
-        import os as _os
-        import tempfile as _tempfile
-        with _tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as _tmp:
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as _tmp:
             _tmp_path = _tmp.name
         t0 = time.perf_counter()
-        result = generate_transcription(
-            model=self._model,
-            audio=audio_path,
-            output_path=_tmp_path,
-            language=lang,
-            verbose=False,
-        )
-        elapsed = time.perf_counter() - t0
-        _os.unlink(_tmp_path)
+        try:
+            result = generate_transcription(
+                model=self._model,
+                audio=audio_path,
+                output_path=_tmp_path,
+                language=lang,
+                verbose=False,
+            )
+            elapsed = time.perf_counter() - t0
+        finally:
+            Path(_tmp_path).unlink(missing_ok=True)
 
         prof = TranscribeProfile(
             total_audio_duration=duration,

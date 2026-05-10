@@ -47,7 +47,7 @@ def _default_max_new_tokens(chunk_seconds: int) -> int:
 class QwenBackend(ASRBackend):
     """Qwen3-ASR backend via qwen-asr + torch MPS."""
 
-    name = "qwen"
+    name = "qwen-asr"
 
     def __init__(self) -> None:
         self._model: Any = None
@@ -203,3 +203,17 @@ class QwenBackend(ASRBackend):
         from ...config import get_language_full
         mapped = get_language_full(lang)
         return mapped if mapped is not None else lang
+
+    @staticmethod
+    def cache_extra_meta(**kwargs: object) -> dict:
+        """Include Qwen generation settings in the transcript cache key."""
+        chunk_seconds = int(kwargs.get("chunk_seconds", 30))  # type: ignore[call-overload]
+        batch_size = int(kwargs.get("batch_size", 1))  # type: ignore[call-overload]
+        max_new_tokens = int(kwargs.get("max_new_tokens", 0) or 0)  # type: ignore[call-overload]
+        dtype = str(kwargs.get("dtype", "") or "float16")
+        return {
+            "chunk_seconds": chunk_seconds,
+            "batch_size": batch_size,
+            "max_new_tokens": max_new_tokens or _default_max_new_tokens(chunk_seconds),
+            "dtype": dtype,
+        }
