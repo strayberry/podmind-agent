@@ -1,4 +1,4 @@
-"""PodMind — Download, transcribe, and summarize Xiaoyuzhou FM podcasts."""
+"""PodMind — Download, transcribe, and summarize Xiaoyuzhou FM podcasts and YouTube videos."""
 
 import argparse
 import shutil
@@ -135,8 +135,9 @@ def cmd_full(args: argparse.Namespace) -> None:
     """Run the full pipeline: fetch → download → transcribe → summarize."""
     print(f"=== Fetching episode: {args.url} ===")
     info = fetch_episode(args.url)
+    source_label = "Channel" if info.source == "youtube" else "Podcast"
     print(f"  Title:    {info.title}")
-    print(f"  Podcast:  {info.podcast_name}")
+    print(f"  {source_label}:  {info.podcast_name}")
     print(f"  Duration: {info.duration_sec:.0f}s")
     print(f"  Audio:    {info.audio_url}")
 
@@ -175,8 +176,9 @@ def cmd_full(args: argparse.Namespace) -> None:
 def cmd_fetch(args: argparse.Namespace) -> None:
     """Scrape metadata and download audio."""
     info = fetch_episode(args.url)
+    source_label = "Channel" if info.source == "youtube" else "Podcast"
     print(f"Title:    {info.title}")
-    print(f"Podcast:  {info.podcast_name}")
+    print(f"{source_label}:  {info.podcast_name}")
     print(f"Duration: {info.duration_sec:.0f}s")
     print(f"Episode:  {info.episode_id}")
     ensure_dirs()
@@ -391,7 +393,10 @@ def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
 
     parser = argparse.ArgumentParser(
-        description="PodMind — download, transcribe, and summarize Xiaoyuzhou FM podcasts"
+        description=(
+            "PodMind — download, transcribe, and summarize "
+            "Xiaoyuzhou FM podcasts and YouTube videos"
+        )
     )
     parser.add_argument("--debug", action="store_true",
                         help="Print traceback on unexpected errors")
@@ -399,7 +404,7 @@ def main() -> None:
 
     # podmind full
     p_full = sub.add_parser("full", help="Run full pipeline")
-    p_full.add_argument("url", help="Xiaoyuzhou FM episode URL")
+    p_full.add_argument("url", help="Xiaoyuzhou FM episode or YouTube video URL")
     p_full.add_argument("--language", type=validate_language, default=None,
                         help="ASR language (zh, en, ja, ko, yue, or full name like Chinese)")
     p_full.add_argument("--model", default="deepseek-v4-pro", help="LLM model for summarization")
@@ -411,7 +416,7 @@ def main() -> None:
 
     # podmind fetch
     p_fetch = sub.add_parser("fetch", help="Scrape metadata and download audio")
-    p_fetch.add_argument("url", help="Xiaoyuzhou FM episode URL")
+    p_fetch.add_argument("url", help="Xiaoyuzhou FM episode or YouTube video URL")
     p_fetch.add_argument("--force", action="store_true", help="Re-download even if cached")
     p_fetch.set_defaults(func=cmd_fetch)
 
@@ -546,7 +551,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print()
     print("  Optional:")
     ffmpeg_ok = _check_binary("ffmpeg")
-    print(f"    [{'OK ' if ffmpeg_ok else '   '}    ] ffmpeg (clip extraction / bench)")
+    print(f"    [{'OK ' if ffmpeg_ok else '   '}    ] ffmpeg (clips / bench / YouTube m4a)")
+    yt_dlp_ok = find_spec("yt_dlp") is not None
+    print(f"    [{'OK ' if yt_dlp_ok else '   '}    ] yt_dlp (YouTube metadata & audio download)")
 
     # --- Info ---
     print()

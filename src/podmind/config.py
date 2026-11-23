@@ -16,15 +16,25 @@ class PodmindError(Exception):
     """
 
 
-# Valid Xiaoyuzhou FM episode ID: 24-char hex string
-_EPISODE_ID_RE = re.compile(r"^[0-9a-f]{24}$")
+# Valid episode IDs:
+# - Xiaoyuzhou FM: 24-char lowercase hex string
+# - YouTube: "yt_" + 11-char YouTube video ID
+_EPISODE_ID_RE = re.compile(r"^(?:[0-9a-f]{24}|yt_[A-Za-z0-9_-]{11})$")
 
 
 def validate_episode_id(eid: str) -> str:
     """Validate and return episode_id. Raises PodmindError if invalid."""
     if not _EPISODE_ID_RE.match(eid):
-        raise PodmindError(f"Invalid episode ID: {eid!r} (expected 24 hex chars)")
+        raise PodmindError(
+            f"Invalid episode ID: {eid!r} "
+            "(expected 24 hex chars or 'yt_' + 11-char YouTube ID)"
+        )
     return eid
+
+
+def is_youtube_episode_id(eid: str) -> bool:
+    """Return True if *eid* is a YouTube episode ID (prefixed with 'yt_')."""
+    return eid.startswith("yt_")
 
 
 # Data directory — defaults to ./data relative to CWD, overridable via env

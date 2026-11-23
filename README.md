@@ -1,14 +1,18 @@
 # PodMind
 
-Download, transcribe, and summarize Xiaoyuzhou FM (小宇宙) podcasts.
+Download, transcribe, and summarize Xiaoyuzhou FM (小宇宙) podcasts and YouTube videos.
 
 ## Quick Start
 
 ```bash
-pip install -e .
+pip install -e ".[mlx-qwen]"  # default Apple Silicon backend
 cp .env.example .env          # add your DEEPSEEK_API_KEY
 
+# Xiaoyuzhou FM
 podmind full "https://www.xiaoyuzhoufm.com/episode/69f441cd5390b7cc928acdcc" --language zh
+
+# YouTube
+podmind full "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --language en
 ```
 
 First run downloads the ASR model (~0.7–1.8 GB depending on backend). Subsequent runs hit the cache.
@@ -29,7 +33,13 @@ All require Apple Silicon. `qwen-asr` needs `torch` and `ffmpeg`. `mlx-qwen-asr`
 - [DeepSeek API key](https://platform.deepseek.com) for summarization
 
 ```bash
-pip install -e .              # includes the default mlx-qwen-asr backend
+# Install with the default mlx-qwen-asr backend
+pip install -e ".[mlx-qwen]"
+
+# Optional alternative ASR backends:
+# pip install -e ".[mlx-whisper]"
+# pip install -e ".[qwen]"        # requires transformers==4.57.6 (use separate venv from mlx-qwen)
+
 cp .env.example .env
 ```
 
@@ -45,6 +55,7 @@ cp .env.example .env
 
 ```bash
 podmind full "https://www.xiaoyuzhoufm.com/episode/<id>" --language zh
+podmind full "https://www.youtube.com/watch?v=<video_id>" --language en
 ```
 
 ### Step by step
@@ -53,9 +64,14 @@ podmind full "https://www.xiaoyuzhoufm.com/episode/<id>" --language zh
 podmind fetch "https://www.xiaoyuzhoufm.com/episode/<id>"
 podmind transcribe <id> --language zh --profile
 podmind summarize <id>
+
+# YouTube (stored under yt_<video_id>)
+podmind fetch "https://youtu.be/<video_id>"
+podmind transcribe yt_<video_id> --language en --profile
+podmind summarize yt_<video_id>
 ```
 
-Use `--asr-backend qwen-asr` for highest quality. Replace `<id>` with the 24-char hex episode ID from the URL.
+Use `--asr-backend qwen-asr` for highest quality. `<id>` is either a 24-char hex Xiaoyuzhou episode ID or `yt_<11-char YouTube video ID>`.
 
 ### Batch
 

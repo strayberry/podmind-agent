@@ -1,18 +1,14 @@
 [project]
 name = "podmind"
 version = "0.1.0"
-description = "Download, transcribe, and summarize Xiaoyuzhou FM podcasts"
+description = "Download, transcribe, and summarize Xiaoyuzhou FM podcasts and YouTube videos"
 requires-python = ">=3.12"
 dependencies = [
     "requests>=2.32",
     "tqdm>=4.67",
-    "qwen-asr>=0.0.6",
+    "yt-dlp>=2025.1",
     "openai>=1.0",
     "python-dotenv>=1.0",
-    "torch>=2.0",
-    "mlx-whisper>=0.4",
-    "mlx-audio>=0.4",
-    "transformers==4.57.6",
 ]
 
 [project.scripts]
@@ -29,6 +25,17 @@ where = ["src"]
 podmind = ["prompts/*.txt"]
 
 [project.optional-dependencies]
+mlx-qwen = [
+    "mlx-audio>=0.4",
+]
+mlx-whisper = [
+    "mlx-whisper>=0.4",
+]
+qwen = [
+    "qwen-asr>=0.0.6",
+    "torch>=2.0",
+    "transformers==4.57.6",
+]
 dev = [
     "ruff>=0.12",
     "mypy>=1.0",
@@ -59,6 +66,7 @@ module = [
     "requests",
     "requests.adapters",
     "tqdm",
+    "yt_dlp",
     "qwen_asr.*",
     "mlx_whisper",
     "mlx_audio.*",
